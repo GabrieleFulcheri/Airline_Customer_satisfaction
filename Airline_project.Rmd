@@ -1,0 +1,501 @@
+---
+title: "Airline Passengers Satisfaction"
+author: "Gabriele Fulcheri"
+date: '2023-05-13'
+output:
+  prettydoc::html_pretty:
+     theme: architect
+    
+---
+
+## INTRODUCTION
+
+**How can we increase the satisfaction of our customers?**
+
+The aim of this project is to analyze airline passengers'judgements in order to understand which are the main drivers of their satisfaction. Once these drivers are pointed out, it would be possible to design *ad hoc* recommendations on how to increase customers'satisfaction.
+
+In order to perform this task, it is necessary to analyze the impact the various aspect of the service have on satisfaction, namely the impact a series of scalar values has on a qualitative data (satisfied vs neutral or dissatisfied). To perform such analysis, ANOVA and contingency tables will be the main focus of this project.
+
+However, since the satisfaction's drivers are 14 and passengers are organized in macro categories such as Loyal/Disloyal and Business/Personal Travellers, it will be necessary to reduce the complexity of the items and find more specific clusters where to perform *ad hoc* initiatives. ANOVA and Contingency tables will be therefore applied and sustained by EFA and Cluster Analysis on the factors obtained.
+
+
+## DATA PREPARATION AND CLEANING
+
+# Libraries used
+
+```{r warning=FALSE, message=FALSE}
+library(prettydoc)
+library(writexl)
+library(tidyverse)
+library(readr)
+library(scales)
+library(psych)
+library(effectsize)
+library(rstatix)
+library(nFactors)
+library(factoextra)
+```
+
+
+# DATA LOADING AND CLEANING: a first glimpse at the data
+
+```{r}
+train <- read.csv('train.csv',header=TRUE, sep=',')
+head(train)
+```
+
+As we can see, the dataset is organized with "ID" as a primary key and identifier of unique entries, while passengers in general are categorized by type of flight, gender, flight class, loyalty and satisfaction.
+Let's have a glimpse of the values distribution:
+
+```{r}
+summary(train)
+```
+
+As we can see from the output, scalar values are from 0 to 9 and there are 310 missing values in the arrival.delay column. Moreover, the dataset seems to include evaluations of under 18 customers which could seems strange. However, since data of such customers are not incorrect, dirty or incoherent, we can leave it, excluding only rows with missing values
+
+```{r}
+Na_values <- train %>% filter(is.na(Arrival.Delay.in.Minutes)) %>% glimpse()
+train %>% duplicated()%>% sum()  ##there are no duplicated values
+```
+
+Before excluding the NA values, let's check the consistency of the others columns and the distribution of their values:
+
+```{r warning=FALSE}
+train %>% count(Customer.Type)
+ggplot(data = train, aes(x=Customer.Type))+ geom_bar(fill='orange', stat = 'count')+
+  labs(title = "Customers' loyalty distribution", y = 'Number of customers')+
+  theme_minimal()
+
+
+ggplot(data = train, aes(x=Age, fill = Gender))+ geom_bar(stat = 'count', position = 'stack')+
+  labs(title = 'Age distribution of customers', y = 'Number of customers')+
+  geom_text(stat= 'count', aes(label=..count..),size = 2.0,vjust = - 0.5, position = 'stack')+
+  theme_light()
+
+train %>%distinct(Type.of.Travel)
+ggplot(data = train, aes(x=Type.of.Travel))+ geom_bar(fill='orange', stat = 'count')+
+  labs(title = 'Types of travels', y = 'Number of customers')+
+  theme_minimal()
+
+train %>%distinct(Class)
+ggplot(data = train, aes(x=Class))+ geom_bar(fill='orange', stat = 'count')+
+  labs(title = "Customers'Class", y = 'Number of customers')+
+  theme_minimal()
+
+train %>%distinct(satisfaction)
+train %>% count(satisfaction)
+ggplot(data = train, aes(x=satisfaction, fill = Customer.Type))+ geom_bar(stat = 'count')+
+  facet_wrap(~ Class)+
+  labs(title = "Customers' satisfaction", y = 'Number of customers')+
+  geom_text(stat= 'count', aes(label=..count..),size = 2.4,vjust = - 0.5, position = 'dodge')+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+From the output above, we can conclude that:
+
+* There is no wrong data in the columns explored
+* The vast majority of the customers considered are loyal customers and business travellers
+* The population gender is equally distributed (half male and half female), while Age follows a normal distribution. Hence, **Gender and Age will likely not play a significant role in profiling clusters**
+* The most popular type of flight are Business and Eco. While customers of business class are generally satisfied, **there is a significant problem of customer satisfaction in Eco and Eco Plus classes**
+
+To conclude this part, let's get rid of the NA values and have a table that highlights the satisfaction problem just quoted:
+
+```{r}
+train_cleaned <- train %>% na.omit(Arrival.Delay.in.Minutes)
+
+train_cleaned %>% group_by(Class) %>% 
+  summarise(LoyalCustomer= sum(Customer.Type == 'Loyal Customer'),
+            DisloyalCustomer = sum(Customer.Type == 'disloyal Customer'),
+            SatisfiedCustomer = percent(sum(satisfaction == "satisfied")/(LoyalCustomer + DisloyalCustomer)),
+            Personal_travel = sum(Type.of.Travel == 'Personal Travel'),
+            Business_travel = sum(Type.of.Travel == 'Business travel')) %>% knitr::kable()
+
+
+```
+
+
+# BIVARIATE ANALYSIS: Contingency tables and ANOVA
+
+Let's now deep dive into the problem of satisfaction, asking two main questions:
+
+- Do the qualitative data have an impact on satisfaction? (namely, is there a correlation between satisfaction and, for example, being a business traveller or a loyal customer?)
+- Which are the most impactful drivers of satisfaction among our scalar values? (namely, is food and drink service that makes customers satisfied, or is it the wi-fi?)
+
+
+## Contingency tables
+
+```{r}
+con1 <- table(train_cleaned$Class, train_cleaned$Customer.Type)#Business are loyal, problem is eco and ecoplus
+knitr::kable(con1)
+chisq.test(con1)
+cramer_v(con1)   ##0.1234206
+
+con2 <- table(train_cleaned$Customer.Type, train_cleaned$satisfaction)  ##loyal customers are not satisfied: no strong correlation between loyalty and satisfaction
+knitr::kable(con2)
+chisq.test(con2)
+cramer_v(con2)  ##0.1875332
+
+con3 <- table(train_cleaned$Type.of.Travel, train_cleaned$satisfaction) ##58,26% of Business travelers are satisfied, while 89,84% of Personal are not satisfied
+knitr::kable(con3)
+chisq.test(con3)
+cramer_v(con3)  ##0.4489738
+
+con4 <- table(train_cleaned$Class, train_cleaned$satisfaction)  ##eco and eco plus are not satisfied
+knitr::kable(con4)
+chisq.test(con4)
+cramer_v(con4)   ## 0.504839
+```
+
+From the output, we can conclude that:
+
+- While every table is statistically significant (p.value < 0.05), **loyalty doesn't play a significant role in satisfaction**, as we may expect from common sense and marketing theory: while disloyal customers are generally not satisfied, loyal ones are almost equally divided between satisfied and not satisfied
+- Type of traveller and flight class play the most significant role, with a cramer value > 0.4. Hence, the solution of customer satisfaction will likely be found examining them.
+
+
+## Means and ANOVA
+
+```{r message=FALSE, warning=FALSE}
+Diff_means <- train_cleaned %>% group_by(Type.of.Travel, satisfaction) %>%
+  summarise(Inflight.wifi.service = mean(Inflight.wifi.service),
+            Gate.location = mean(Gate.location),
+            Departure.Arrival.time.convenient = mean(Departure.Arrival.time.convenient),
+            Ease.of.Online.booking = mean(Ease.of.Online.booking),
+            Food.and.drink = mean(Food.and.drink),
+            Online.boarding = mean(Online.boarding),
+            Seat.comfort = mean(Seat.comfort),
+            Inflight.entertainment = mean(Inflight.entertainment),
+            On.board.service = mean(On.board.service),
+            Leg.room.service = mean(Leg.room.service),
+            Baggage.handling = mean(Baggage.handling),
+            Checkin.service = mean(Checkin.service),
+            Inflight.service = mean(Inflight.service), 
+            Cleanliness = mean(Cleanliness))
+
+Diff_means_eco <- train_cleaned %>% filter(Class == "Eco") %>%  group_by(satisfaction) %>%
+  summarise(Inflight.wifi.service = mean(Inflight.wifi.service),
+            Gate.location = mean(Gate.location),
+            Departure.Arrival.time.convenient = mean(Departure.Arrival.time.convenient),
+            Ease.of.Online.booking = mean(Ease.of.Online.booking),
+            Food.and.drink = mean(Food.and.drink),
+            Online.boarding = mean(Online.boarding),
+            Seat.comfort = mean(Seat.comfort),
+            Inflight.entertainment = mean(Inflight.entertainment),
+            On.board.service = mean(On.board.service),
+            Leg.room.service = mean(Leg.room.service),
+            Baggage.handling = mean(Baggage.handling),
+            Checkin.service = mean(Checkin.service),
+            Inflight.service = mean(Inflight.service), 
+            Cleanliness = mean(Cleanliness))
+
+calc_diff_business <- function(x) {
+  return(abs(x[1] - x[2]))
+}
+
+calc_diff_personal <- function(x) {
+  return(abs(x[3] - x[4]))
+}
+
+new_row_business <- data.frame(t(data.frame(c("Business travel", "Sat-neutr/dissat",apply(Diff_means[3:16], 2, calc_diff_business)))))
+
+new_row_personal <- data.frame(t(data.frame(c("Personal Travel", "Sat-neutr/dissat",apply(Diff_means[3:16], 2, calc_diff_personal)))))
+
+names(new_row_business) <- names(Diff_means)
+names(new_row_personal) <- names(Diff_means)
+
+new_row_business <- new_row_business %>% mutate_at(vars(3:16), as.numeric)
+new_row_personal <- new_row_personal %>% mutate_at(vars(3:16), as.numeric)
+
+
+Diff_means <- rbind(Diff_means, new_row_business, new_row_personal)
+knitr::kable(Diff_means)%>%
+   kableExtra::scroll_box(width = "800px", height = "600px")
+
+write_xlsx(Diff_means, path = "Diff_means.xlsx")
+```
+
+We saved the Diff_means and Diff_means_eco tables in excel in order to save apart our result and have a quick plot. From the results obtained, we can conclude that **while service is the dominant driver of business travellers satisfaction (e.g inflight service, on board service and baggage handling), personal travellers mainly care about wifi service, ease of online booking and online boarding**
+
+Let's now perform an ANOVA test in order to get the significance of these results and the correlation values with eta squared. Let's first divide the two type of travellers
+
+```{r}
+Business <- train_cleaned %>% filter(Type.of.Travel == "Business travel")
+Personal <- train_cleaned %>% filter(Type.of.Travel == "Personal Travel")
+```
+
+Let's start from Business travellers:
+
+```{r}
+aov1 <- aov(Online.boarding ~ satisfaction, data = Business)
+eta_squared(aov1)
+anova(aov1)
+
+aov2 <- aov(Seat.comfort ~ satisfaction, data = Business)
+eta_squared(aov2)
+anova(aov2)
+
+aov3 <- aov(Inflight.entertainment ~ satisfaction, data = Business)
+eta_squared(aov3)
+anova(aov3)
+
+aov4 <- aov(On.board.service ~ satisfaction, data = Business)
+eta_squared(aov4)
+anova(aov4)
+
+aov5 <- aov(Food.and.drink ~ satisfaction, data = Business)
+eta_squared(aov5)
+anova(aov5)
+
+aov6 <- aov(Baggage.handling ~ satisfaction, data = Business)
+eta_squared(aov6)
+anova(aov6)
+
+aov7 <- aov(Ease.of.Online.booking ~ satisfaction, data = Business)
+eta_squared(aov7)
+anova(aov7)
+```
+
+All values are significant. As we have seen from the differences in means, Online boarding has the stronger correlation with satisfaction (medium one: > 0.3), while also inflight entertainment plays a considerable role (> 0,2)
+
+Let's now do an ANOVA test of the most significant drivers for Personal travellers:
+
+```{r}
+aov8 <- aov(Ease.of.Online.booking ~ satisfaction, data = Personal)
+eta_squared(aov8)
+anova(aov8)
+
+aov9 <- aov(Online.boarding ~ satisfaction, data = Personal)
+eta_squared(aov9)
+anova(aov9)
+
+aov10 <- aov(Inflight.wifi.service ~ satisfaction, data = Personal)
+eta_squared(aov10)
+anova(aov10)
+```
+
+As we can see, the eta values for this drivers are sensibly lower than the business ones. This means that Personal travellers are more difficult to satisfy, since multiple factors occur and interact among them.
+Let's now conclude with the Eco class means: 
+
+```{r}
+Eco <- train_cleaned %>% filter(Class == "Eco")
+
+aov11 <- aov(Inflight.wifi.service ~ satisfaction, data = Eco)
+TukeyHSD(aov11)
+eta_squared(aov11)
+anova(aov11)
+
+aov12 <- aov(Online.boarding ~ satisfaction, data = Eco)
+TukeyHSD(aov12)
+eta_squared(aov12)
+anova(aov12)
+```
+
+As we can see, inflight wi-fi service plays the most significant role in Eco customers satisfaction
+
+
+# EFA and CLUSTERING
+
+Now that we have a clear vision on what would be key drivers for customer satisfaction, we need to reduce the complexity of our items in order to simplify clustering and group similar items under the same factor.
+Let's start with the nScree() to see the suggested number of factor and asking for eigenvalues in order to decide the optimal number of factors. Making this decision, we need to respect some criteria:
+
+- Number of factors = 30/40% of original items
+- Total variance explained > 65%
+- Communality > 20/30% for each item (since we are analyzing preferences)
+- Interpretability of factors: they make sense
+
+```{r}
+nScree(train_cleaned[, 9:22])
+eigen(cor(train_cleaned[, 9:22]))$values
+```
+
+4 is the suggested number and, from the eigen values, we can see that 5 could be also a possible solution, since its eigen value is 0.95. Let's now try three possible solutions: 
+
+```{r}
+
+factanal(train_cleaned[, 9:22], factors = 5)
+factanal(train_cleaned[, 9:22], factors = 4)
+factanal(train_cleaned[, 9:22], factors = 3)
+
+```
+
+FACTORS = 5: 
+
+PRO
+
+  - **Uniqueness values are good**: only two items have a unique variance not explained by factors > 0.6
+  - **Cumulative variance > 0.5**
+
+CONS
+
+  - **Fifth factor is useless**: it explains 0.034 of the cumulative variance and it captures only one items, which seems to have more sense grouped in the second factor
+
+
+FACTORS = 4:
+
+PRO
+
+  - **Factors make sense**: factors are well grouped, with only one of them (Online boarding) left alone. The variance explained by each of them is proportioned
+  - **Cumulative variance > 0.5**
+
+CONS
+
+  - **Uniqueness values are worse than previously**: four items are not explained for more than half of their variance
+  
+
+FACTORS = 3:
+
+PRO
+
+  - **Factors make sense**: no item is left alone and factor are really easy to interpret
+  - **Best SS loading and proportion var values so far**: factors are almost equally important in explaining variance of items
+
+CONS
+
+  - **Cumulative variance is 0.5**
+  - **Items are too simplified**: from 14 to 3, it seems a too strong reduction
+
+For the considerations above, it seems that a good solution could be either 4 or 3 factors. Since 3 it seems to me a too strong reduction, I'll opt for 4 as final solution. 
+
+```{r}
+factanal(train_cleaned[, 9:22], factors = 4, rotation = 'promax', param = 1, scores = "Bartlett") ##equamax rotation explain a little bit less variance, but factor 4 has more sense
+
+fa <- factanal(train_cleaned[, 9:22], factors = 4, rotation = 'promax', param = 1, scores = "Bartlett")
+
+factor_scores <- data.frame(fa$scores)
+
+```
+
+Now it is time to interpret the four factors obtained, giving them a new name to make the following steps a little bit easier:
+
+- Factor1 = food and drink + inflight entertainment + cleanliness + seat comfort ---> this items represent the enjoyment aspect of the flight, therefore we can label the factor **"Enjoyment"**
+- Factor2 = On.board.service + Leg.room.service + Baggage.handling + Checkin.service + Inflight.service --->  this items represent the service aspect of the flight, therefore we can label the factor **"Service"**
+- Factor3 = Inflight.wifi.service + Departure.Arrival.time.convenient + Ease.of.Online.booking + Gate.location  ---> this items represent the user-friendly aspect of the flight, therefore we can label the factor **"Ease_of_the_flight"**, meaning that it is easy to book and take because the customer journey is smooth. It combines the logistic aspect of the flight with the digital offer of it
+- Factor4 = Online boarding --> the name will remain the same. We notice how well it would fit in the previous factor and that was the main pro aspect of the 3 factors solution.
+
+```{r}
+factor_scores <- factor_scores %>% rename("Enjoyment" = Factor1, "Service" = Factor2, "Ease_of_the_flight" = Factor3, "Online_Boarding" = Factor4) 
+
+final_df <- cbind(train_cleaned, factor_scores)
+```
+
+We can now proceed with cluster analysis
+
+```{r}
+wssplot <- function(data, nc=15, seed=1234){
+  wss <- (nrow(data)-1)*sum(apply(data,2,var))
+  for (i in 2:nc){
+    set.seed(seed)
+    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+  plot(1:nc, wss, type="b", xlab="Number of Clusters",
+       ylab="Within groups sum of squares")
+  wss
+}  ## to obtain the ideal number of cluster for the k-mean clustering
+
+wssplot(factor_scores)
+```
+
+We will try three different solutions, namely 4,5 and 6 clusters:
+
+```{r warning=FALSE}
+
+kmeans(factor_scores, centers = 4)$centers
+kmeans(factor_scores, centers = 4)$size
+
+kmeans(factor_scores, centers = 5)$centers
+kmeans(factor_scores, centers = 5)$size
+
+kmeans(factor_scores, centers = 6)$centers
+kmeans(factor_scores, centers = 6)$size
+```
+
+**4 clusters seems to be the right solution**: observations are well distributed among the clusters and between_SS / total_SS =  48.8 %, which is not ideal, but neither that bad.
+With 5 or 6 cluster, we can obtain a better SS indicator, but our model became too complex and up to 2 clusters don't make sense, since they have all negative values or all high values, meaning that they are either highly demanding on everything or strongly indifferent.
+
+```{r}
+clus <- as.data.frame(kmeans(factor_scores, centers = 4)$cluster) %>% 
+  rename("clusters" = 'kmeans(factor_scores, centers = 4)$cluster')
+
+
+k1 <- cbind(factor_scores, clus)
+
+
+##test the significance of the clusters
+
+anova(lm(Service ~ clusters, data = k1))  ##p.value = 0.3334
+anova(lm(Enjoyment ~ clusters, data = k1))
+anova(lm(Ease_of_the_flight ~ clusters, data = k1))
+anova(lm(Online_Boarding ~ clusters, data = k1))
+```
+
+Service is the only factor that is not significant, namely there is not a significant difference in its mean across all cluster. This is confirmed by the results above obtained, which indicates that, with the sole exception of cluster 3, all cluster are fairly interested to service aspects of the flight.
+
+In conclusion, we obtain the following clusters:
+
+- Cluster1: it is mainly interested by enjoyment of the flight and doesn't care about online boarding
+- Cluster2: it is the most demanding cluster since it gives importance to all factors, especially online boarding and service
+- Cluster3: it is indifferent to all factors, especially enjoyment
+- Cluster4: it is mainly concerned with Online boarding and doesn't care about services
+
+
+## EXPLORATION OF CLUSTER OBTAINED
+
+From now on, cluster 3 will be excluded since it is the cluster of indifferents and it seems to be impossible to work on
+
+```{r}
+final_Df <- cbind(train_cleaned, factor_scores, k1[5])
+
+
+clus_info <- final_Df %>% filter(clusters != 3) %>% group_by(clusters) %>% 
+  summarize(Personal.traveller = sum(Type.of.Travel == "Personal Travel"),
+            Business.traveller = sum(Type.of.Travel == "Business travel"),
+            Personal.traveller.prc  = percent(Personal.traveller / (Personal.traveller + Business.traveller)),
+            Business.traveller.prc = percent(Business.traveller / (Personal.traveller + Business.traveller)),
+            Loyal = sum(Customer.Type == "Loyal Customer"),
+            Disloyal = sum(Customer.Type == "disloyal Customer"),
+            Loyal_prc = percent(Loyal/(Loyal + Disloyal)),
+            Age = round(mean(Age), digits = 0),
+            Eco = sum(Class == "Eco"),
+            Eco.Plus = sum(Class == "Eco Plus"),
+            Business = sum(Class == "Business"),
+            Eco_prc = percent(Eco / (Eco + Eco.Plus+Business)),
+            Eco.Plus_prc = percent(Eco.Plus / (Eco + Eco.Plus+Business)),
+            Business_prc = percent(Business / (Eco + Eco.Plus+Business)),
+            Flight.Distance = round(mean(Flight.Distance), digits = 0),
+            Avrg_Delay = round(mean(Arrival.Delay.in.Minutes), digits = 0),
+            Satisfied = sum(satisfaction == "satisfied"),
+            Neutral.Dissatisfied = sum(satisfaction == "neutral or dissatisfied"),
+            Satisfied_prc = percent(Satisfied / (Satisfied + Neutral.Dissatisfied)))
+
+knitr::kable(clus_info)
+```
+
+As we have already pointed out at the beginning of the analysis, the main problems of satisfaction lie in Personal travels, more precisely of Eco and Eco Plus flight classes. 
+After our clustering, we now know that cluster 2 and 4 are the most problematic, since in cluster 1 are mainly business travellers and satisfied.
+
+```{r}
+final_Df$clusters <- as.character(final_Df$clusters)
+
+final_Df <- final_Df %>% filter(clusters != "3")
+
+ggplot(data = final_Df, aes(x=satisfaction, fill = clusters))+ geom_bar(stat = 'count')+
+  facet_wrap(~ Class)+
+  labs(title = "Customers' satisfaction", y = 'Number of customers')+
+  geom_text(stat= 'count', aes(label=..count..),size = 1.8,vjust = - 0.5, position = 'stack')+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+## CONCLUSION
+
+Considering the values of the four factors identified of cluster 2 and 4, it is possible to notice that cluster 2 is highly demanding in terms of service, enjoyment and online boarding but mainly flights in Eco class. Cluster 4, on the contrary, is the most dissatisfied and easiest to deal with, since it seems to care only about online boarding service. 
+
+To increase customer satisfaction, the company need to work on Eco customers since they are the most unsatisfied. Considering ANOVA results and clustering, there are two ways of increasing their satisfaction:
+
+- **Include a better wi-fi service in the Eco flights** (increase overall, but is expensive)
+- **Improve Online boarding services for Eco customers** (focused on cluster 4 and easy to implement)
+
+
+
+
+
